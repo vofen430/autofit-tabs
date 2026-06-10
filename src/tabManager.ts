@@ -57,6 +57,8 @@ export class TabManager {
             if (container instanceof HTMLElement) {
                 container.style.overflowX = '';
                 container.style.overflowY = '';
+                container.style.maxWidth = '';
+                container.style.clipPath = '';
                 container.scrollLeft = 0;
             }
         });
@@ -477,20 +479,22 @@ export class TabManager {
         
         const container = activeTab.closest('.workspace-tab-header-container-inner');
         if (container instanceof HTMLElement) {
+            this.updateTabContainerClip(container);
+
             // Calculate the center position of the active tab
             const tabRect = activeTab.getBoundingClientRect();
-            const containerRect = container.getBoundingClientRect();
+            const visibleArea = this.getVisibleTabArea(container);
             
             // Check if the tab is already visible in the viewport
             const tabLeft = activeTab.offsetLeft;
             const tabRight = tabLeft + tabRect.width;
             const containerLeft = container.scrollLeft;
-            const containerRight = containerLeft + containerRect.width;
+            const containerRight = containerLeft + visibleArea.width;
             
             // Only scroll if the tab is not fully visible
             if (tabLeft < containerLeft || tabRight > containerRight) {
                 // Calculate smooth scroll position - centering the tab
-                const targetScroll = (tabLeft + (tabRect.width / 2)) - (containerRect.width / 2);
+                const targetScroll = (tabLeft + (tabRect.width / 2)) - (visibleArea.width / 2);
                 
                 // Use smooth scrolling with a custom animation
                 this.smoothScrollTo(container, container.scrollLeft, Math.max(0, targetScroll), 300);
@@ -623,8 +627,6 @@ export class TabManager {
             const headerKey = this.getHeaderKey(header);
             const isPinned = this.plugin.settings.ignorePinnedTabs ? 
                 header.querySelector('.workspace-tab-header-status-icon.mod-pinned') : null;
-            const isWebLink = this.plugin.settings.ignoreWebLinks ? 
-                header.getAttribute('data-type') === 'webviewer' : false;
             const isActive = header.classList.contains('is-active');
             const cachedWidth = this.tabWidthCache.get(headerKey);
             const needsRecalc = cachedWidth === undefined || isActive;
@@ -633,7 +635,6 @@ export class TabManager {
                 header,
                 headerKey,
                 isPinned: !!isPinned,
-                isWebLink,
                 isActive,
                 cachedWidth,
                 needsRecalc
@@ -642,7 +643,7 @@ export class TabManager {
 
         // Calculate widths for headers that need it
         headerData.forEach(data => {
-            if (data.needsRecalc && !data.isPinned && !data.isWebLink) {
+            if (data.needsRecalc && !data.isPinned) {
                 data.cachedWidth = this.calculateHeaderWidth(data.header);
             }
         });
@@ -650,9 +651,9 @@ export class TabManager {
         // Now batch all DOM writes together
         requestAnimationFrame(() => {
             headerData.forEach(data => {
-                const { header, headerKey, isPinned, isWebLink, isActive, cachedWidth } = data;
+                const { header, headerKey, isPinned, isActive, cachedWidth } = data;
                 
-                if (isPinned || isWebLink) {
+                if (isPinned) {
                     // Remove autofit classes and styles if they were previously applied
                     header.classList.remove('autofit-tab', 'autofit-max-width');
                     header.style.removeProperty('--header-width');
@@ -744,6 +745,54 @@ export class TabManager {
             }, 50);
         }, 100);
     }
+
+    private getVisibleTabArea(container: HTMLElement): { left: number; right: number; width: number } {
+        const containerRect = container.getBoundingClientRect();
+        let right = containerRect.right;
+        const parent = container.parentElement;
+
+        if (parent) {
+            const siblings = Array.from(parent.children);
+            const containerIndex = siblings.indexOf(container);
+
+            for (const sibling of siblings.slice(containerIndex + 1)) {
+                if (!(sibling instanceof HTMLElement)) {
+                    continue;
+                }
+
+                const siblingRect = sibling.getBoundingClientRect();
+                const style = window.getComputedStyle(sibling);
+                const isVisible = (
+                    style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    siblingRect.width > 0 &&
+                    siblingRect.height > 0
+                );
+
+                if (isVisible) {
+                    right = Math.min(right, siblingRect.left);
+                }
+            }
+        }
+
+        right = Math.max(containerRect.left, right);
+        return {
+            left: containerRect.left,
+            right,
+            width: right - containerRect.left
+        };
+    }
+
+    private updateTabContainerClip(container: HTMLElement): void {
+        const containerRect = container.getBoundingClientRect();
+        const visibleArea = this.getVisibleTabArea(container);
+        const rightInset = Math.max(0, Math.ceil(containerRect.right - visibleArea.right));
+
+        container.style.maxWidth = '';
+        container.style.clipPath = rightInset > 0
+            ? `inset(0 ${rightInset}px 0 0)`
+            : '';
+    }
     
     /**
      * Updates the visibility state of tabs based on whether they're in the viewport
@@ -755,9 +804,8 @@ export class TabManager {
         document.querySelectorAll('.workspace-split.mod-vertical.mod-root .workspace-tab-header-container-inner')
             .forEach(container => {
                 if (container instanceof HTMLElement) {
-                    const containerRect = container.getBoundingClientRect();
-                    const containerLeft = containerRect.left;
-                    const containerRight = containerRect.right;
+                    this.updateTabContainerClip(container);
+                    const visibleArea = this.getVisibleTabArea(container);
                     
                     // Get all tabs within this container
                     const tabs = Array.from(container.querySelectorAll('.workspace-tab-header.autofit-tab'));
@@ -767,10 +815,10 @@ export class TabManager {
                             const tabRect = tab.getBoundingClientRect();
                             
                             // A tab is out of view if it's completely to the left of the container
-                            // or completely to the right of the container
+                            // or completely to the right of the visible tab strip.
                             const isOutOfView = (
-                                tabRect.right < containerLeft || 
-                                tabRect.left > containerRight
+                                tabRect.right < visibleArea.left ||
+                                tabRect.left > visibleArea.right
                             );
                             
                             // Apply or remove the class based on visibility
